@@ -5,7 +5,7 @@ local config = {}
 config.maxInteractDistance = 5.0
 
 -- {0-255, 0-255, 0-255, 0-255}
-config.themeColor = { 28, 100, 184, 200 } --- r, g, b, a
+config.themeColor = { 255, 0, 0, 200 } --- r, g, b, a
 
 --- texture dictionary and texture name for the sprite used to show non active interactions.
 config.IndicatorSprite = { dict = 'shared', txt = 'emptydot_32' }
