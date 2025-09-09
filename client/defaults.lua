@@ -27,7 +27,18 @@ end
 ---@param useOffset boolean?
 ---@return boolean?
 local function canInteractWithDoor(entity, coords, door, useOffset)
-    if exports.t1ger_mechanic:IsPlayerDiagnosing() then return end
+    local result, err = pcall(function()
+            return exports.t1ger_mechanic:IsPlayerDiagnosing() and
+            exports.t1ger_mechanic:IsVehicleOnCarJack(entity) and
+            exports.t1ger_mechanic:IsWorkflowActive() and
+            exports.t1ger_mechanic:IsCarryingBodyPart() and
+            exports.t1ger_mechanic:IsCarryingComponent()
+    end)
+
+    if result and not err then
+        return
+    end
+    
     if not GetIsDoorValid(entity, door) or GetVehicleDoorLockStatus(entity) > 1 or IsVehicleDoorDamaged(entity, door) or cache.vehicle then return end
 
     if useOffset then return true end
