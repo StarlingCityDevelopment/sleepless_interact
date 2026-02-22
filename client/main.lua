@@ -4,6 +4,8 @@ local config = require 'client.modules.config'
 local utils = require 'client.modules.utils'
 local animation = require 'client.modules.animation'
 
+config.maxInteractDistanceSq = config.maxInteractDistance * config.maxInteractDistance
+
 ---@type boolean
 local drawLoopRunning = false
 
@@ -99,6 +101,33 @@ end
 
 local modelCache, netIdCache = {}, {}
 
+-- Async canInteract caching system
+local canInteractCache = {}
+local canInteractPending = {}
+
+---@param option InteractOption
+---@param entity number
+---@param distance number
+---@param coords vector3
+---@return boolean|nil -- nil means pending/unknown, use cached or default
+local function getCanInteractCached(option, entity, distance, coords)
+    local cacheKey = tostring(option)
+    local cached = canInteractCache[cacheKey]
+
+    if not canInteractPending[cacheKey] then
+        canInteractPending[cacheKey] = true
+        CreateThread(function()
+            local success, resp = pcall(option.canInteract, entity, distance, coords, option.name)
+            canInteractCache[cacheKey] = {
+                result = success and resp or false
+            }
+            canInteractPending[cacheKey] = nil
+        end)
+    end
+
+    return cached and cached.result or false
+end
+
 local function cachedEntityInfo(entity)
     if modelCache[entity] then
         return modelCache[entity], netIdCache[entity]
@@ -139,15 +168,15 @@ local function filterValidOptions(options, entity, distance, coords)
             end
 
 
-            if not hide then hide = distance > (option.distance or 2.0) end
+            if not hide then hide = distance > (option.distanceSq or 4.0) end
 
             if not hide and option.groups then hide = not utils.hasPlayerGotGroup(option.groups) end
 
             if not hide and option.items then hide = not utils.hasPlayerGotItems(option.items, option.anyItem) end
 
             if not hide and option.canInteract then
-                local success, resp = pcall(option.canInteract, entity, distance, coords, option.name)
-                hide = not success or not resp
+                local result = getCanInteractCached(option, entity, distance, coords)
+                hide = not result
             end
 
             if not hide then
@@ -324,7 +353,7 @@ local function checkNearbyEntities(coords)
                 valid[num] = {
                     entity = entity,
                     coords = entCoords,
-                    currentDistance = #(coords - entCoords),
+                    currentDistance = utils.getDistanceSquared(coords, entCoords),
                     currentScreenDistance = utils.getScreenDistanceSquared(entCoords),
                     options = options
                 }
@@ -340,7 +369,7 @@ local function checkNearbyEntities(coords)
                             entity = entity,
                             bone = boneId,
                             coords = boneCoords,
-                            currentDistance = #(coords - boneCoords),
+                            currentDistance = utils.getDistanceSquared(coords, boneCoords),
                             currentScreenDistance = utils.getScreenDistanceSquared(boneCoords),
                             options = _options
                         }
@@ -364,7 +393,7 @@ local function checkNearbyEntities(coords)
                             entity = entity,
                             offset = offsetStr,
                             coords = worldPos,
-                            currentDistance = #(coords - worldPos),
+                            currentDistance = utils.getDistanceSquared(coords, worldPos),
                             currentScreenDistance = utils.getScreenDistanceSquared(worldPos),
                             options = _options
                         }
@@ -387,11 +416,11 @@ end
 ---@return NearbyItem[]
 local function checkNearbyCoords(coords, update)
     for id, _coords in pairs(store.coordIds) do
-        local dist = #(coords - _coords)
-        if dist < config.maxInteractDistance then
+        local distSq = utils.getDistanceSquared(coords, _coords)
+        if distSq < config.maxInteractDistanceSq then
             update[#update + 1] = {
                 coords = _coords,
-                currentDistance = dist,
+                currentDistance = distSq,
                 currentScreenDistance = utils.getScreenDistanceSquared(_coords),
                 coordId = id,
                 options = { coords = store.coords[id] }
@@ -450,9 +479,8 @@ local function drawLoop()
                         end
                     end
 
-                    local distance = #(playerCoords - coords)
-                    local validOpts, validCount, hideCompletely = filterValidOptions(item.options, item.entity, distance,
-                        coords)
+                    local distanceSq = utils.getDistanceSquared(playerCoords, coords)
+                    local validOpts, validCount, hideCompletely = filterValidOptions(item.options, item.entity, distanceSq, coords)
                     local id = item.bone or item.offset or item.entity or item.coordId
                     local shouldUpdate = false
 
@@ -467,7 +495,7 @@ local function drawLoop()
                         coords = coords,
                         shouldUpdate = shouldUpdate,
                         hideCompletely = hideCompletely,
-                        distance = distance,
+                        distance = distanceSq,
                         validOpts = validOpts,
                         validCount = validCount
                     }
@@ -560,8 +588,7 @@ local function drawLoop()
                     if distance < config.maxInteractDistance and item.currentScreenDistance < math.huge then
                         local distanceRatio = math.max(1.0 - (distance / 10.0), 0.0)
                         local scale = 0.025 * distanceRatio
-                        DrawSprite(config.IndicatorSprite.dict, config.IndicatorSprite.txt, 0.0, 0.0, scale,
-                            scale * aspectRatio, 45.0, r, g, b, 255)
+                        DrawSprite(config.IndicatorSprite.dict, config.IndicatorSprite.txt, 0.0, 0.0, scale, scale * aspectRatio, 45.0, r, g, b, 255)
                     end
                 end
 
@@ -619,7 +646,14 @@ RegisterNUICallback('select', function(data, cb)
         local option = store.current.options?[data[1]]?[data[2]]
         if option then
             if option.onSelect then
-                option.onSelect(option.qtarget and store.current.entity or utils.getResponse(option))
+                if option.canInteract then
+                    local success, resp = pcall(option.canInteract, store.current.entity, store.current.distance, store.current.coords, option.name)
+                    if success and resp then
+                        option.onSelect(option.qtarget and store.current.entity or utils.getResponse(option))
+                    end
+                else
+                    option.onSelect(option.qtarget and store.current.entity or utils.getResponse(option))
+                end
             elseif option.export then
                 exports[option.resource][option.export](nil, utils.getResponse(option))
             elseif option.event then
